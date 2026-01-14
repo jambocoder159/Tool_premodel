@@ -111,15 +111,18 @@ class PolymarketClient:
     async def find_btc_15min_markets(self) -> List[MarketData]:
         """Find active 15-minute BTC binary option markets.
 
-        Searches for markets matching keywords like:
-        - "Bitcoin 15 minutes"
-        - "BTC price above/below"
-        - "15-min" expiry
+        Searches for:
+        1. BTC Up/Down 15-minute markets (btc-updown-15m-*)
+        2. Markets with "Bitcoin 15 minutes" style questions
         """
+        # First try the Gamma API for BTC updown markets
+        updown_markets = await self.find_btc_updown_markets()
+        if updown_markets:
+            return updown_markets
+
+        # Fallback: search CLOB API for keyword matches
         markets = await self.get_markets()
         btc_markets = []
-
-        keywords = ["bitcoin", "btc", "15 min", "15min", "15-min"]
 
         for market in markets:
             question = market.get("question", "").lower()
@@ -160,6 +163,105 @@ class PolymarketClient:
                     continue
 
         return btc_markets
+
+    async def find_btc_updown_markets(self) -> List[MarketData]:
+        """Find active BTC Up/Down 15-minute markets via Gamma API.
+
+        These markets have slug format: btc-updown-15m-{timestamp}
+        Outcomes are "Up" and "Down" (not Yes/No).
+
+        Returns:
+            List of active BTC updown markets, sorted by expiry (soonest first)
+        """
+        session = await self._get_session()
+        url = f"{POLYMARKET_GAMMA_URL}/events"
+
+        try:
+            params = {"active": "true", "closed": "false", "limit": 200}
+            async with session.get(url, params=params) as response:
+                response.raise_for_status()
+                events = await response.json()
+
+            markets = []
+            now = datetime.now().astimezone()
+
+            for event in events:
+                slug = event.get("slug", "").lower()
+
+                # Match btc-updown-15m-* pattern
+                if not ("btc-updown" in slug and "15m" in slug):
+                    continue
+
+                for m in event.get("markets", []):
+                    clob_token_ids = m.get("clobTokenIds", [])
+
+                    # Parse outcomes - could be string "["Up", "Down"]" or list
+                    outcomes_raw = m.get("outcomes", [])
+                    if isinstance(outcomes_raw, str):
+                        import json
+                        try:
+                            outcomes = json.loads(outcomes_raw)
+                        except json.JSONDecodeError:
+                            outcomes = []
+                    else:
+                        outcomes = outcomes_raw
+
+                    if len(clob_token_ids) < 2 or len(outcomes) < 2:
+                        continue
+
+                    # Find Up/Down token indices
+                    up_idx = next(
+                        (i for i, o in enumerate(outcomes) if o.lower() == "up"),
+                        0
+                    )
+                    down_idx = next(
+                        (i for i, o in enumerate(outcomes) if o.lower() == "down"),
+                        1
+                    )
+
+                    up_token = clob_token_ids[up_idx] if up_idx < len(clob_token_ids) else ""
+                    down_token = clob_token_ids[down_idx] if down_idx < len(clob_token_ids) else ""
+
+                    if not up_token or not down_token:
+                        continue
+
+                    # Parse end date
+                    end_date = None
+                    end_date_str = m.get("endDate") or m.get("endDateIso")
+                    if end_date_str:
+                        try:
+                            end_date = datetime.fromisoformat(
+                                end_date_str.replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            pass
+
+                    # Skip expired markets
+                    if end_date and end_date < now:
+                        continue
+
+                    markets.append(
+                        MarketData(
+                            market_id=m.get("conditionId", ""),
+                            condition_id=m.get("conditionId", ""),
+                            question=m.get("question", ""),
+                            yes_token_id=up_token,  # Up = Yes equivalent
+                            no_token_id=down_token,  # Down = No equivalent
+                            end_date=end_date,
+                        )
+                    )
+
+            # Sort by expiry time (soonest first)
+            markets.sort(key=lambda m: m.end_date or datetime.max.replace(tzinfo=None))
+
+            if markets:
+                logger.info(f"Found {len(markets)} BTC updown 15m market(s)")
+
+            return markets
+
+        except Exception as e:
+            logger.error(f"Error finding BTC updown markets: {e}")
+            return []
 
     def set_market(self, market: MarketData) -> None:
         """Set the current market to track."""

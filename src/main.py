@@ -76,7 +76,7 @@ async def run_collector(debug: bool = False) -> None:
 async def list_markets() -> None:
     """List available 15-minute BTC markets."""
     print()
-    print("Searching for 15-minute BTC markets on Polymarket...")
+    print("Searching for 15-minute BTC Up/Down markets on Polymarket...")
     print()
 
     from .data import PolymarketClient
@@ -84,10 +84,15 @@ async def list_markets() -> None:
     client = PolymarketClient()
 
     try:
-        markets = await client.find_btc_15min_markets()
+        # First try updown markets
+        markets = await client.find_btc_updown_markets()
 
         if not markets:
-            print("No 15-minute BTC markets found.")
+            print("No active BTC Up/Down 15-minute markets found.")
+            print()
+            print("These markets appear periodically (every 15 minutes).")
+            print("Try again in a few minutes, or check:")
+            print("  https://polymarket.com/markets?_c=crypto")
             return
 
         print(f"Found {len(markets)} market(s):")
@@ -95,9 +100,16 @@ async def list_markets() -> None:
 
         for i, market in enumerate(markets, 1):
             print(f"{i}. {market.question}")
-            print(f"   Market ID: {market.market_id[:16]}...")
+            print(f"   Condition ID: {market.market_id[:32]}...")
+            print(f"   Up Token:   {market.yes_token_id[:32]}...")
+            print(f"   Down Token: {market.no_token_id[:32]}...")
             if market.end_date:
-                print(f"   Expires: {market.end_date}")
+                from datetime import datetime
+                now = datetime.now().astimezone()
+                remaining = market.end_date - now
+                mins = int(remaining.total_seconds() // 60)
+                secs = int(remaining.total_seconds() % 60)
+                print(f"   Expires: {market.end_date} ({mins}m {secs}s remaining)")
             print()
 
     finally:
