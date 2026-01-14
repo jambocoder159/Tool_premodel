@@ -59,7 +59,7 @@ secrets/
 *.json
 *.xlsx
 *.parquet
-data/
+/data/
 
 # Temporary files
 tmp/
