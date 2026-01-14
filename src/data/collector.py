@@ -76,41 +76,55 @@ class DataCollector:
                     await asyncio.sleep(0.5)
                     continue
 
-                # Get Polymarket prices
-                poly_prices = await self.polymarket.get_current_prices()
-
-                if poly_prices is None:
-                    logger.debug("Waiting for Polymarket prices...")
-                    await asyncio.sleep(0.5)
-                    continue
+                # Get Polymarket prices (if market is set)
+                poly_prices = None
+                if self._current_market:
+                    poly_prices = await self.polymarket.get_current_prices()
 
                 # Create aligned data point
-                data_point = AlignedDataPoint(
-                    timestamp=datetime.now(),
-                    btc_price=btc_price,
-                    yes_price=poly_prices.yes_price,
-                    no_price=poly_prices.no_price,
-                    yes_bid=poly_prices.yes_bid,
-                    yes_ask=poly_prices.yes_ask,
-                    no_bid=poly_prices.no_bid,
-                    no_ask=poly_prices.no_ask,
-                    time_to_expiry_seconds=poly_prices.time_to_expiry_seconds,
-                    market_id=poly_prices.market_id,
-                )
+                if poly_prices:
+                    # Full mode: BTC + Polymarket
+                    data_point = AlignedDataPoint(
+                        timestamp=datetime.now(),
+                        btc_price=btc_price,
+                        yes_price=poly_prices.yes_price,
+                        no_price=poly_prices.no_price,
+                        yes_bid=poly_prices.yes_bid,
+                        yes_ask=poly_prices.yes_ask,
+                        no_bid=poly_prices.no_bid,
+                        no_ask=poly_prices.no_ask,
+                        time_to_expiry_seconds=poly_prices.time_to_expiry_seconds,
+                        market_id=poly_prices.market_id,
+                    )
+                    logger.debug(
+                        f"Collected: BTC=${btc_price:.2f}, "
+                        f"Yes={poly_prices.yes_price:.4f}, "
+                        f"No={poly_prices.no_price:.4f}, "
+                        f"TTX={poly_prices.time_to_expiry_seconds}s"
+                    )
+                else:
+                    # BTC-only mode
+                    data_point = AlignedDataPoint(
+                        timestamp=datetime.now(),
+                        btc_price=btc_price,
+                        yes_price=0.0,
+                        no_price=0.0,
+                        yes_bid=0.0,
+                        yes_ask=0.0,
+                        no_bid=0.0,
+                        no_ask=0.0,
+                        time_to_expiry_seconds=None,
+                        market_id="btc_only",
+                    )
+                    logger.debug(f"Collected (BTC-only): ${btc_price:.2f}")
 
                 # Write to storage
                 self.storage.write(data_point)
 
-                logger.debug(
-                    f"Collected: BTC=${btc_price:.2f}, "
-                    f"Yes={poly_prices.yes_price:.4f}, "
-                    f"No={poly_prices.no_price:.4f}, "
-                    f"TTX={poly_prices.time_to_expiry_seconds}s"
-                )
-
-                # Check if market has expired
+                # Check if market has expired (only in full mode)
                 if (
-                    poly_prices.time_to_expiry_seconds is not None
+                    poly_prices
+                    and poly_prices.time_to_expiry_seconds is not None
                     and poly_prices.time_to_expiry_seconds <= 0
                 ):
                     logger.info("Market expired, searching for new market...")
